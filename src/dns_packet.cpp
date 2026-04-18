@@ -202,11 +202,13 @@ tl::expected<ResourceRecord, DNSParseError> ParseResourceRecord(std::span<const 
 	parsed_record.q_type = static_cast<DnsQType>(rte_be_to_cpu_16(response->type));
 	parsed_record.ttl = rte_be_to_cpu_32(response->ttl);
 
-	auto rdata_bytes = std::span(reader, rte_be_to_cpu_16(response->data_len));
-
-	// Make sure that the rdata bytes area doesn't go outside the packet byte area
-	if (rdata_bytes.end() > bytes.end()) [[unlikely]]
+	// std::span(it, n) requires [it, it+n) to be a valid range.
+	const uint16_t data_len = rte_be_to_cpu_16(response->data_len);
+	const size_t remaining = static_cast<size_t>(bytes.end() - reader);
+	if (data_len > remaining) [[unlikely]]
 		return tl::unexpected(DNSParseError::OutOfBounds);
+
+	auto rdata_bytes = std::span(reader, data_len);
 
 	auto begin = reader;
 	switch (parsed_record.q_type) {
