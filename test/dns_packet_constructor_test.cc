@@ -150,8 +150,8 @@ size_t ConstructExamplePacketIpv6(RTEMbuf<DefaultPacket>& pkt) {
 	in6_addr src_addr = {{SRC_IP_IPV6}};
 	in6_addr dst_addr = {{DST_IP_IPV6}};
 
-	memcpy(ip_hdr->src_addr, &src_addr, sizeof(in6_addr));
-	memcpy(ip_hdr->dst_addr, &dst_addr, sizeof(in6_addr));
+	memcpy(&ip_hdr->src_addr, &src_addr, sizeof(in6_addr));
+	memcpy(&ip_hdr->dst_addr, &dst_addr, sizeof(in6_addr));
 
 	udp_hdr->dst_port = rte_cpu_to_be_16(53);
 	udp_hdr->src_port = rte_cpu_to_be_16(SRC_PORT);
