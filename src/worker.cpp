@@ -11,6 +11,7 @@
 #include <optional>
 #include <stack>
 #include <tuple>
+#include <unordered_set>
 #include <variant>
 
 #include "dns_format.h"
@@ -54,6 +55,11 @@ struct WorkerContext {
 			ctx.pkt_distributors.emplace_back(std::move(dns_array));
 		}
 
+		// Container resolver is rotated on retransmit; accept replies
+		// from any configured resolver.
+		for (const InAddr &r : param.resolvers)
+			ctx.resolver_set.insert(r.s_addr);
+
 		return ctx;
 	}
 
@@ -70,6 +76,7 @@ struct WorkerContext {
 	    std::vector<RequestContainer *, RteAllocator<RequestContainer *>>>
 	    available_container_stack;
 	std::vector<RTEMbufArray<DNSPacketDistr, RX_PKT_BURST>> pkt_distributors;
+	std::unordered_set<uint32_t> resolver_set;
 
 private:
 	WorkerContext(uint16_t worker_id, const WorkerParams &param)
@@ -249,9 +256,10 @@ void HandleParsedPacket(WorkerContext &ctx, WorkerParams &param, const DNSPacket
 		return;
 	}
 
-	if (request_container.resolver.s_addr != std::get<InAddr>(pkt.ip_data.src_ip).s_addr)
-	    [[unlikely]] {
-		spdlog::warn("packet with name {} has IP mismatch!", pkt.question);
+	const uint32_t pkt_src = std::get<InAddr>(pkt.ip_data.src_ip).s_addr;
+	if (!ctx.resolver_set.contains(pkt_src)) [[unlikely]] {
+		spdlog::warn("packet with name {} from unknown src, dropping",
+		    pkt.question);
 		return;
 	}
 
