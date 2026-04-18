@@ -58,6 +58,7 @@ auto fmt::formatter<DNSParseError>::format(DNSParseError e, format_context &ctx)
 			break;
 		case DNSParseError::EtherHdrProtoErr:
 			error = "ethernet header error";
+			break;
 		case DNSParseError::InvalidChar:
 			error = "invalid character detected in packet";
 			break;
