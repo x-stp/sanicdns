@@ -242,6 +242,13 @@ void HandleParsedPacket(WorkerContext &ctx, WorkerParams &param, const DNSPacket
 		return;
 	}
 
+	// IPv6 src would make std::get<InAddr> throw std::bad_variant_access.
+	if (!std::holds_alternative<InAddr>(pkt.ip_data.src_ip)) [[unlikely]] {
+		spdlog::warn("packet with name {} has non-IPv4 src, dropping",
+		    pkt.question);
+		return;
+	}
+
 	if (request_container.resolver.s_addr != std::get<InAddr>(pkt.ip_data.src_ip).s_addr)
 	    [[unlikely]] {
 		spdlog::warn("packet with name {} has IP mismatch!", pkt.question);
