@@ -24,6 +24,9 @@
 #include "network_types.h"
 #include "scanner_config.h"
 
+// Larger than any sane DNS/UDP response; guards against bogus mbuf data_len.
+static constexpr uint16_t MAX_SANE_PKT_LEN = 4096;
+
 struct RequestContainer {
 	RequestContainer()
 	    : ready_for_send_node(this), timeout_node(this), request(std::nullopt) { }
@@ -324,6 +327,13 @@ void RX(WorkerContext &ctx, NICType &rxtx_if, uint16_t worker_id, WorkerParams &
 			RTE_MBUF_F_RX_IP_CKSUM_BAD ||
 		    (p->get().ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK) == RTE_MBUF_F_RX_IP_CKSUM_BAD)
 			continue;
+
+		// Reject obviously-wrong data_len before parse or hex-dump.
+		if (p->get().data_len == 0 || p->get().data_len > MAX_SANE_PKT_LEN)
+		    [[unlikely]] {
+			param.counters[worker_id].parse_fail++;
+			continue;
+		}
 
 		auto parsed_packet = ({
 			auto res = DNSPacket::init(param.raw_mempool, *p);
