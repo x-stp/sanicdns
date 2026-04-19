@@ -389,7 +389,8 @@ void RX(WorkerContext &ctx, NICType &rxtx_if, uint16_t worker_id, WorkerParams &
 				auto dns_push = dns_dist.push(std::move(wrapped_packet));
 				if (dns_push)
 					spdlog::warn("worker {}: distribution buffer is full, "
-						     "dropping packet");
+						     "dropping packet",
+					    worker_id);
 
 				continue;
 			}
