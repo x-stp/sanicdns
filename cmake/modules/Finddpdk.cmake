@@ -33,7 +33,7 @@ find_path (dpdk_INCLUDE_DIR
   PATH_SUFFIXES
     dpdk)
 
-set(rte_libs
+set(rte_libs_required
     bus_pci
     bus_vdev
     cfgfile
@@ -49,6 +49,19 @@ set(rte_libs
     mempool_ring
     meter
     net
+    pci
+    rcu
+    ring
+    security
+    telemetry
+    timer
+    vhost
+)
+
+# PMDs are optional: distros often split or omit them (e.g. Arch does not
+# ship librte_net_af_xdp). Missing optional drivers only fail at runtime
+# if sanicdns is actually told to use them.
+set(rte_libs_optional
     net_af_xdp
     net_bnxt
     net_cxgbe
@@ -62,14 +75,9 @@ set(rte_libs
     net_ring
     net_sfc
     net_vmxnet3
-    pci
-    rcu
-    ring
-    security
-    telemetry
-    timer
-    vhost
 )
+
+set(rte_libs ${rte_libs_required} ${rte_libs_optional})
 
 # Only necessary when linking statically
 if (${BUILD_STATIC})
@@ -97,8 +105,10 @@ foreach (lib ${rte_libs})
     NAME rte_${lib}
     HINTS
       ${dpdk_PC_STATIC_LIBRARY_DIRS})
-  list (APPEND dpdk_REQUIRED
-    ${library_name})
+  list (FIND rte_libs_required ${lib} _is_required_idx)
+  if (NOT ${_is_required_idx} EQUAL -1)
+    list (APPEND dpdk_REQUIRED ${library_name})
+  endif ()
   list (APPEND dpdk_LIBRARIES
     ${library_name})
 
