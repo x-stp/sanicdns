@@ -429,8 +429,15 @@ void RX(WorkerContext &ctx, NICType &rxtx_if, uint16_t worker_id, WorkerParams &
 	// Dequeue all outstanding packets and continue packet receive process.
 	auto &dns_ring = param.distribution_rings[worker_id];
 	auto rx_dns = dns_ring.dequeue_burst<RX_PKT_BURST>();
-	for (auto &p : rx_dns)
+	for (auto &p : rx_dns) {
+		// Re-check worker_id after ring transit.
+		if (p.dns_packet.GetWorkerId() != worker_id) [[unlikely]] {
+			spdlog::warn("worker {}: ring delivered pkt with worker_id {}",
+			    worker_id, p.dns_packet.GetWorkerId());
+			continue;
+		}
 		HandleParsedPacket(ctx, param, p.dns_packet, p.raw_packet.get(), out_logger);
+	}
 }
 
 int Worker(std::stop_token stop_token, uint16_t worker_id, WorkerParams param) {
