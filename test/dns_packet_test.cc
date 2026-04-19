@@ -9,6 +9,7 @@
 #include <glaze/glaze.hpp>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -810,4 +811,104 @@ TEST(DnsPacketParserTest, OutOfBoundsTrunc) {
 	auto [mbuf_pool_out, parsed_packet] = ExtractPacket(test_packet);
 	EXPECT_EQ(parsed_packet.has_value(), false);
 	EXPECT_EQ(parsed_packet.error(), DNSParseError::OutOfBounds);
+}
+
+// Zero-filled frame: ether_type 0 is neither IPv4 nor IPv6.
+TEST(DnsPacketParserTest, ZeroFilledFrameReportsEtherError) {
+	auto test_packet = TestPacket{.raw = std::string(128, '\0')};
+	auto [mbuf_pool_out, parsed_packet] = ExtractPacket(test_packet);
+	ASSERT_FALSE(parsed_packet.has_value());
+	EXPECT_EQ(parsed_packet.error(), DNSParseError::EtherHdrProtoErr);
+
+	EXPECT_EQ(fmt::format("{}", DNSParseError::EtherHdrProtoErr),
+	    "ethernet header error");
+	EXPECT_EQ(fmt::format("{}", DNSParseError::InvalidChar),
+	    "invalid character detected in packet");
+}
+
+// Answer RData.data_len claims 256 bytes, only 2 follow.
+TEST(DnsPacketParserTest, TruncatedRdataLenBoundsChecked) {
+	auto test_packet = TestPacket{
+	    .raw = "\xbc\xd0\x74\x17\xbe\x44\x30\xde\x4b\xac\x03\x7c\x08\x00\x45\x00"
+		   "\x00\x33\x00\x01\x00\x00\x40\x11\x00\x00\xc0\xa8\x00\x01\xc0\xa8"
+		   "\x00\x02\x00\x35\xce\x31\x00\x1f\x00\x00\xd3\x4d\x81\x80\x00\x01"
+		   "\x00\x01\x00\x00\x00\x00\x01\x61\x00\x00\x01\x00\x01"
+		   "\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x01\x00\x01\x02"s};
+
+	auto [mbuf_pool_out, parsed_packet] = ExtractPacket(test_packet);
+	ASSERT_FALSE(parsed_packet.has_value());
+	EXPECT_EQ(parsed_packet.error(), DNSParseError::OutOfBounds);
+}
+
+// Ethertype == IPv6 with no IPv6 header payload.
+TEST(DnsPacketParserTest, Ipv6HeaderTruncated) {
+	auto test_packet =
+	    TestPacket{.raw = "\xbc\xd0\x74\x17\xbe\x44\x30\xde\x4b\xac\x03\x7c\x86\xdd"s};
+	auto [mbuf_pool_out, parsed_packet] = ExtractPacket(test_packet);
+	ASSERT_FALSE(parsed_packet.has_value());
+	EXPECT_EQ(parsed_packet.error(), DNSParseError::OutOfBounds);
+}
+
+// Empty mbuf.
+TEST(DnsPacketParserTest, EmptyFrameIsRejected) {
+	auto test_packet = TestPacket{.raw = ""s};
+	auto [mbuf_pool_out, parsed_packet] = ExtractPacket(test_packet);
+	ASSERT_FALSE(parsed_packet.has_value());
+	EXPECT_EQ(parsed_packet.error(), DNSParseError::OutOfBounds);
+}
+
+// UDP src port != 53.
+TEST(DnsPacketParserTest, NonDnsSourcePortRejected) {
+	auto test_packet = TestPacket{
+	    .raw = "\xbc\xd0\x74\x17\xbe\x44\x30\xde\x4b\xac\x03\x7c\x08\x00\x45\x00"
+		   "\x00\x20\x00\x01\x00\x00\x40\x11\x00\x00\xc0\xa8\x00\x01\xc0\xa8"
+		   "\x00\x02\x00\x01\xce\x31\x00\x0c\x00\x00"s};
+	auto [mbuf_pool_out, parsed_packet] = ExtractPacket(test_packet);
+	ASSERT_FALSE(parsed_packet.has_value());
+	EXPECT_EQ(parsed_packet.error(), DNSParseError::SrcPortErr);
+}
+
+// IPv6 reply must land in the In6Addr arm; std::get<InAddr> on that
+// variant must throw. Together these pin the contract worker.cpp's
+// std::holds_alternative<InAddr> guard relies on.
+TEST(DnsPacketIpVariantRegression, Ipv6SrcLandsInV6Arm) {
+	auto test_packet = TestPacket{
+	    .raw = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x86\xdd"
+		   "\x60\x00\x00\x00\x00\x15\x11\x40"
+		   "\x20\x01\x0d\xb8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01"
+		   "\x20\x01\x0d\xb8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02"
+		   "\x00\x35\x30\x39\x00\x15\x00\x00"
+		   "\x00\x01\x81\x80\x00\x01\x00\x00\x00\x00\x00\x00"
+		   "\x01\x61\x00\x00\x01\x00\x01"s,
+	    .ip_type = PacketIpType::Ipv6};
+
+	auto [mbuf_pool_out, parsed_packet] = ExtractPacket(test_packet);
+	ASSERT_TRUE(parsed_packet.has_value());
+
+	EXPECT_TRUE(std::holds_alternative<In6Addr>(parsed_packet->ip_data.src_ip));
+	EXPECT_FALSE(std::holds_alternative<InAddr>(parsed_packet->ip_data.src_ip));
+
+	EXPECT_THROW(
+	    { std::ignore = std::get<InAddr>(parsed_packet->ip_data.src_ip); },
+	    std::bad_variant_access);
+}
+
+// Reply is accepted from any configured resolver, not just the current one.
+TEST(WorkerResolverSetRegression, AcceptsAnyConfiguredResolver) {
+	std::unordered_set<uint32_t> resolver_set;
+	for (const auto &ip : {"10.0.0.1", "10.0.0.2", "10.0.0.3"}) {
+		auto addr = InAddr::init(ip);
+		ASSERT_TRUE(addr.has_value());
+		resolver_set.insert(addr->s_addr);
+	}
+
+	for (const auto &ip : {"10.0.0.1", "10.0.0.2", "10.0.0.3"}) {
+		auto addr = InAddr::init(ip);
+		ASSERT_TRUE(addr.has_value());
+		EXPECT_TRUE(resolver_set.contains(addr->s_addr)) << "for " << ip;
+	}
+
+	auto foreign = InAddr::init("8.8.8.8");
+	ASSERT_TRUE(foreign.has_value());
+	EXPECT_FALSE(resolver_set.contains(foreign->s_addr));
 }
